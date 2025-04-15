@@ -81,49 +81,64 @@ class Scenario(BaseScenario):
     def adversaries(self, world):
         return [agent for agent in world.agents if agent.adversary]
 
+    # def calculate_total_reward(self, world):
+    #     collision_reward = 0
+    #     proximity_reward = 0
+    #     cooperation_reward = 0
+    #     time_penalty = -0.1
+    #     agents = self.good_agents(world)
+    #     adversaries = self.adversaries(world)
+    #
+    #     # 碰撞奖励（稀疏奖励）
+    #     for adv in adversaries:
+    #         if adv.collide:
+    #             for ag in agents:
+    #                 if self.is_collision(ag, adv):
+    #                     collision_reward += 10  # 调整为2
+    #
+    #     # 密集奖励：追逐者与所有逃跑者的距离
+    #     # 改进的 proximity_reward：按最近目标 + 分层惩罚
+    #     for adv in adversaries:
+    #         # 计算到所有逃跑者的距离，取最小值
+    #         distances = [
+    #             np.sqrt(np.sum(np.square(ag.state.p_pos - adv.state.p_pos)))
+    #             for ag in agents
+    #         ]
+    #         min_distance = min(distances) if distances else 0
+    #
+    #         # 分层奖励设计
+    #         if min_distance < 3.0:  # 近距离高权重
+    #             proximity_reward -= 0.03 * min_distance
+    #         elif min_distance < 10.0:  # 中距离中等权重
+    #             proximity_reward -= 0.01 * min_distance
+    #         else:  # 远距离低权重
+    #             proximity_reward -= 0.005 * min_distance
+    #
+    #     # 协作奖励：多个追逐者包围同一目标
+    #     for ag in agents:
+    #         distances = [np.sqrt(np.sum(np.square(ag.state.p_pos - adv.state.p_pos))) for adv in adversaries]
+    #         num_close_adv = sum(d < 1.0 for d in distances)
+    #         if num_close_adv >= 2:
+    #             cooperation_reward += 1 * num_close_adv
+    #
+    #     # total_reward = collision_reward + proximity_reward + cooperation_reward + time_penalty
+    #     total_reward = collision_reward
+    #     return total_reward
     def calculate_total_reward(self, world):
-        collision_reward = 0
-        proximity_reward = 0
-        cooperation_reward = 0
-        time_penalty = -0.1
-        agents = self.good_agents(world)
-        adversaries = self.adversaries(world)
+        # 1) 碰撞奖励
+        collision = 0.0
+        rew = 0
+        for ag in self.good_agents(world):
+            for adv in self.adversaries(world):
+                if self.is_collision(ag, adv):
+                    collision += 10.0
 
-        # 碰撞奖励（稀疏奖励）
-        for adv in adversaries:
-            if adv.collide:
-                for ag in agents:
-                    if self.is_collision(ag, adv):
-                        collision_reward += 10  # 调整为2
+        # 2) shaping：所有追逐者到最近逃跑者的最小距离
+        for adv in self.adversaries(world):
+            rew -= 0.1 * min([np.sqrt(np.sum(np.square(a.state.p_pos - adv.state.p_pos))) for a in self.good_agents(world)])
 
-        # 密集奖励：追逐者与所有逃跑者的距离
-        # 改进的 proximity_reward：按最近目标 + 分层惩罚
-        for adv in adversaries:
-            # 计算到所有逃跑者的距离，取最小值
-            distances = [
-                np.sqrt(np.sum(np.square(ag.state.p_pos - adv.state.p_pos)))
-                for ag in agents
-            ]
-            min_distance = min(distances) if distances else 0
+        return collision + rew
 
-            # 分层奖励设计
-            if min_distance < 3.0:  # 近距离高权重
-                proximity_reward -= 0.03 * min_distance
-            elif min_distance < 10.0:  # 中距离中等权重
-                proximity_reward -= 0.01 * min_distance
-            else:  # 远距离低权重
-                proximity_reward -= 0.005 * min_distance
-
-        # 协作奖励：多个追逐者包围同一目标
-        for ag in agents:
-            distances = [np.sqrt(np.sum(np.square(ag.state.p_pos - adv.state.p_pos))) for adv in adversaries]
-            num_close_adv = sum(d < 1.0 for d in distances)
-            if num_close_adv >= 2:
-                cooperation_reward += 1 * num_close_adv
-
-        # total_reward = collision_reward + proximity_reward + cooperation_reward + time_penalty
-        total_reward = collision_reward
-        return total_reward
     # def calculate_total_reward(self, world):
     #     # 计算所有追逐者的碰撞奖励之和
     #     collision_reward = 0
