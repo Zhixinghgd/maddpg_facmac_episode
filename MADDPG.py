@@ -387,6 +387,7 @@ class MADDPG:
             self.update_mixing(loss)
 
         # === Actor 训练：FACMAC 风格 ===
+
         # 1) 初始化所有 actor 的隐藏状态
         actor_h = {
             aid: self.agents[aid].actor.init_hidden().repeat(batch_size, 1)
@@ -406,51 +407,53 @@ class MADDPG:
                 continue
 
             # 3.1) 准备每个 agent 的 obs_t 和 last_action_t
-            obs_t = {x: batch['obs'][x][mask, t] for x in self.agent_ids}
+            obs_t  = {x: batch['obs'][x][mask, t]       for x in self.agent_ids}
             last_t = {x: batch['last_actions'][x][mask, t] for x in self.agent_ids}
 
-            # 3.2) 用 actor 生成动作并更新隐藏状态
-            acts_t = {}
+            # 3.2) 用 actor 网络生成动作并更新隐藏状态
+            acts_t   = {}
             logits_t = {}
             for x in self.agent_ids:
                 act, logit, new_h = self.agents[x].action(
                     obs_t[x], last_t[x], actor_h[x][mask], model_out=True
                 )
-                acts_t[x] = act
+                acts_t[x]   = act
                 logits_t[x] = logit
                 actor_h[x][mask] = new_h
 
             # 3.3) 构建全局 obs & act
-            global_obs = torch.cat([obs_t[x] for x in self.agent_ids], dim=-1)
+            global_obs     = torch.cat([obs_t[x] for x in self.agent_ids], dim=-1)
             new_global_act = torch.cat([acts_t[x] for x in self.agent_ids], dim=-1)
 
-            # 3.4) 计算全局 Q
-            q_globals = {
-                x: self.agents[x].critic_value(global_obs, new_global_act)
+            # 3.4) 计算全局 Q（detach，避免反传到 critic）
+            q_global = {
+                x: self.agents[x].critic_value(global_obs, new_global_act).detach()
                 for x in self.agent_ids
             }
 
-            # 3.5) FACMAC: 计算团队 Q_tot（不再 no_grad）
+            # 3.5) FACMAC: 计算团队 Q_tot（不 detach，梯度可传回 actor）
             if self.adversary_ids:
                 local_qs = [
-                    self.agents[adv].agent_q_value(obs_t[adv], acts_t[adv], last_t[adv])
+                    self.agents[adv].agent_q_value(
+                        obs_t[adv], acts_t[adv], last_t[adv]
+                    )
                     for adv in self.adversary_ids
                 ]  # list of [batch]
-                q_stack = torch.stack(local_qs, dim=1)  # [batch, n_adversaries]
+                q_stack  = torch.stack(local_qs, dim=1)   # [batch, n_adversaries]
                 adv_state = torch.cat(
                     [obs_t[adv] for adv in self.adversary_ids], dim=1
                 )  # [batch, sum(obs_dims)]
-                q_tot = self.Mixing_net(q_stack, adv_state).squeeze(-1)  # [batch]
+                q_tot    = self.Mixing_net(q_stack, adv_state).squeeze(-1)  # [batch]
 
             # 3.6) 对每个 agent 累积 loss
             for x in self.agent_ids:
-                qg = q_globals[x]
                 if x in self.adversary_ids:
-                    # FACMAC 用 Q_tot；保留全局 Q 可写成 0.3*q_tot + 0.7*qg
+                    # FACMAC 用 Q_tot；如果想保留 global Q 也可写 0.3*q_tot + 0.7*q_global[x]
                     q_comb = q_tot
                 else:
-                    q_comb = qg
+                    q_comb = q_global[x]
 
+                # 单步 loss = -E[q_comb] + L2 正则
                 loss_t = - q_comb.mean() + 1e-3 * logits_t[x].pow(2).mean()
                 total_actor_loss += loss_t
                 count += 1

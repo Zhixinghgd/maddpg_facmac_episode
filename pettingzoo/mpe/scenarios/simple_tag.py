@@ -94,7 +94,7 @@ class Scenario(BaseScenario):
             if adv.collide:
                 for ag in agents:
                     if self.is_collision(ag, adv):
-                        collision_reward += 5  # 调整为2
+                        collision_reward += 10  # 调整为2
 
         # 密集奖励：追逐者与所有逃跑者的距离
         # 改进的 proximity_reward：按最近目标 + 分层惩罚
@@ -121,7 +121,8 @@ class Scenario(BaseScenario):
             if num_close_adv >= 2:
                 cooperation_reward += 1 * num_close_adv
 
-        total_reward = collision_reward + proximity_reward + cooperation_reward + time_penalty
+        # total_reward = collision_reward + proximity_reward + cooperation_reward + time_penalty
+        total_reward = collision_reward
         return total_reward
     # def calculate_total_reward(self, world):
     #     # 计算所有追逐者的碰撞奖励之和
