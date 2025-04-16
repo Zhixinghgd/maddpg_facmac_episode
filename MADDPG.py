@@ -12,37 +12,33 @@ from QMIX_net import QMixNet
 import logging
 
 
-def setup_logger(filename):
+def setup_logger(name: str, filename: str):
     """
-    设置带有文件名的日志记录器。
-    输入为log文件路径，输出为一条日志记录，使用示例：
-        logger = setup_logger('logfile.log')  # 配置日志记录器，日志将保存到 'logfile.log'
-        logger.info("This is an info message.")  # 记录一条 INFO 消息，对应文件中2025-01-02 10:00:00--INFO--This is an info message.
-        logger.warning("This is a warning message.")  # 记录一条 WARNING 消息，2025-01-02 10:00:01--WARNING--This is a warning message.
+    name: logger 名称
+    filename: 输出文件
     """
-    logger = logging.getLogger()  # 获取一个全局日志记录器实例
-    logger.setLevel(logging.INFO)  # 设置日志记录器的最低日志级别为 INFO,只有级别大于等于 INFO 的日志消息才会被记录。
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    # 禁止向上冒泡到 root
+    logger.propagate = False
 
-    # 创建文件处理器，指定日志文件和写入模式
-    handler = logging.FileHandler(filename, mode='a')  # 使用追加模式
-    handler.setLevel(logging.INFO)  # 设置文件处理器的最低日志级别为 INFO
+    # 如果这个 logger 已经有 handler，就不再重复添加
+    if not logger.handlers:
+        handler = logging.FileHandler(filename, mode='a')
+        handler.setLevel(logging.INFO)
+        fmt = logging.Formatter('%(asctime)s--%(levelname)s--%(message)s',
+                                datefmt='%Y-%m-%d %H:%M:%S')
+        handler.setFormatter(fmt)
+        # 强制 flush
+        orig_emit = handler.emit
+        def flush_emit(rec):
+            orig_emit(rec)
+            handler.flush()
+        handler.emit = flush_emit
 
-    # 设置日志格式：年月日时分秒--日志级别--日志内容
-    formatter = logging.Formatter('%(asctime)s--%(levelname)s--%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    handler.setFormatter(formatter)
-
-    # 为了强制每次写入都立即刷新，覆盖原始的 `emit` 方法
-    original_emit = handler.emit
-
-    def flush_emit(record):
-        original_emit(record)  # 执行原始的 emit 方法
-        handler.flush()  # 强制刷新缓存
-
-    handler.emit = flush_emit  # 用新的 emit 方法替换原始的 emit 方法
-
-    # 将处理器添加到 logger 中
-    logger.addHandler(handler)
+        logger.addHandler(handler)
     return logger
+
 
 
 class MADDPG:
@@ -116,8 +112,12 @@ class MADDPG:
 
         self.batch_size = batch_size
         self.res_dir = res_dir  # 保存训练结果的目录
-        self.logger = setup_logger(os.path.join(res_dir, 'maddpg.log'))
-        
+
+        self.logger = setup_logger('maddpg', os.path.join(res_dir, 'maddpg.log'))
+        self.global_q_logger = setup_logger('global_q', os.path.join(res_dir, 'global_q_loss.log'))
+        self.qmix_logger = setup_logger('qmix', os.path.join(res_dir, 'qmix_loss.log'))
+        self.actor_logger = setup_logger('actor', os.path.join(res_dir, 'actor_loss.log'))
+
         # 用于基于episode的训练
         self.hidden_states = {agent_id: self.agents[agent_id].init_hidden() for agent_id in self.agent_ids}
 
@@ -368,6 +368,7 @@ class MADDPG:
                 # 计算损失并更新
                 loss = F.mse_loss(q_eval[mask], q_target[mask])
                 self.agents[aid].update_critic(loss)
+                self.global_q_logger.info(f"{aid} Critic Loss: {loss.item()}")
 
         # === 训练Mixing网络 ===
         if qmix_data['local_qs']:
@@ -385,6 +386,7 @@ class MADDPG:
             target = total_rewards + gamma * (1 - dones) * q_next_tot
             loss = F.mse_loss(q_tot, target.detach())
             self.update_mixing(loss)
+            self.qmix_logger.info(f"QMIX Loss: {loss.item()}")
 
         # === Actor 训练：FACMAC 风格 ===
 
@@ -427,7 +429,7 @@ class MADDPG:
 
             # 3.4) 计算全局 Q（detach，避免反传到 critic）
             q_global = {
-                x: self.agents[x].critic_value(global_obs, new_global_act).detach()
+                x: self.agents[x].critic_value(global_obs, new_global_act)
                 for x in self.agent_ids
             }
 
@@ -449,7 +451,8 @@ class MADDPG:
             for x in self.agent_ids:
                 if x in self.adversary_ids:
                     # FACMAC 用 Q_tot；如果想保留 global Q 也可写 0.3*q_tot + 0.7*q_global[x]
-                    q_comb = q_tot
+                    # q_comb = q_tot
+                    q_comb = q_global[x]
                 else:
                     q_comb = q_global[x]
 
@@ -461,6 +464,7 @@ class MADDPG:
         # 4) 平均并一次性 backward
         if count > 0:
             total_actor_loss = total_actor_loss / count
+            self.actor_logger.info(f"Actor Loss: {total_actor_loss.item():.4f}")
             total_actor_loss.backward()
 
         # 5) 梯度裁剪 & 更新所有 actor

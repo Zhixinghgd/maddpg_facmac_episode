@@ -51,12 +51,12 @@ if __name__ == '__main__':
     # 解析命令行参数
     parser.add_argument('env_name', type=str, default='simple_adversary_v2', help='name of the env',
                         choices=['simple_adversary_v2', 'simple_spread_v2', 'simple_tag_v2', 'simple_world_comm_v2'])
-    parser.add_argument('--episode_num', type=int, default=30000,
+    parser.add_argument('--episode_num', type=int, default=20000,
                         help='total episode num during training procedure')
     parser.add_argument('--episode_length', type=int, default=25, help='steps per episode')
     parser.add_argument('--learn_interval', type=int, default=4,
                         help='episodes interval between learning time')
-    parser.add_argument('--random_episodes', type=int, default=1000,
+    parser.add_argument('--random_episodes', type=int, default=2000,
                         help='random episodes before the agent start to learn')
     parser.add_argument('--tau', type=float, default=0.02, help='soft update parameter')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor')

@@ -12,7 +12,7 @@ def smooth_curve(data, window=100):
     return smoothed
 
 # 加载数据
-result_dir = './results/simple_tag_v2/29'  # 替换为你的实际路径
+result_dir = './results/simple_tag_v2/23'  # 替换为你的实际路径
 with open(os.path.join(result_dir, 'rewards.pkl'), 'rb') as f:
     data = pickle.load(f)
 rewards = data['rewards']  # 结构：{agent_id: array[episode_num]}
@@ -36,7 +36,8 @@ smooth_agent = smooth_curve(mean_agent, window)
 
 # Adversary组（新计算逻辑）
 sum_other = np.sum(other_rewards, axis=0) if other_rewards else np.zeros_like(total_rewards)
-combined_adv = sum_other * 0.5 + total_rewards * 0.5  # 组合公式
+# combined_adv = sum_other * 0.5 + total_rewards * 0.5  # 组合公式
+combined_adv = sum_other # 组合公式
 smooth_combined_adv = smooth_curve(combined_adv, window)
 
 # 绘制图像

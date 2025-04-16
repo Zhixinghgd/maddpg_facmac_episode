@@ -135,7 +135,7 @@ class Scenario(BaseScenario):
 
         # 2) shaping：所有追逐者到最近逃跑者的最小距离
         for adv in self.adversaries(world):
-            rew -= 0.1 * min([np.sqrt(np.sum(np.square(a.state.p_pos - adv.state.p_pos))) for a in self.good_agents(world)])
+            rew -= 0.2 * min([np.sqrt(np.sum(np.square(a.state.p_pos - adv.state.p_pos))) for a in self.good_agents(world)])
 
         return collision + rew
 
