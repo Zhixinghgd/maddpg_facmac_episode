@@ -74,8 +74,9 @@ class Agent:
 
     def target_action(self, obs, l_a, hidden_state=None):
         """使用目标网络生成动作（用于学习稳定性）"""
+        # print(obs.shape, l_a.shape)
         # 确保观测和上一步动作维度正确
-        x = torch.cat([obs, l_a], dim=1)
+        x = torch.cat([obs, l_a], dim=1)  # obs -> [batch_size, obs_dim], l_a -> [batch_size, act_dim]
         
         # 确保hidden_state维度正确
         if hidden_state is None:
@@ -190,7 +191,7 @@ class RNNAgent(nn.Module):
     def __init__(self, obs_dim, action_dim, rnn_hidden_dim=64):
         super(RNNAgent, self).__init__()
         self.rnn_hidden_dim = rnn_hidden_dim
-        self.fc1 = nn.Linear(obs_dim, rnn_hidden_dim)
+        self.fc1 = nn.Linear(obs_dim + action_dim, rnn_hidden_dim)
         self.rnn = nn.GRUCell(rnn_hidden_dim, rnn_hidden_dim)
         self.fc2 = nn.Linear(rnn_hidden_dim, action_dim)
 

@@ -127,9 +127,9 @@ if __name__ == '__main__':
         
         # 在随机探索期之后，每隔learn_interval个episode进行一次学习
         if episode >= args.random_episodes and episode % args.learn_interval == 0:
-            maddpg.learn(args.batch_size, args.gamma)
+            # maddpg.learn(args.batch_size, args.gamma)
             # maddpg.qmix_learn(args.batch_size, args.gamma)
-            # maddpg.maddpg_learn(args.batch_size, args.gamma)
+            maddpg.maddpg_learn(args.batch_size, args.gamma)
             maddpg.update_target(args.tau)
         
         # 记录奖励
