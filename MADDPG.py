@@ -406,17 +406,6 @@ class MADDPG:
             global_obs = torch.cat([batch['obs'][aid][:, t:t+1].view(batch_size, -1) for aid in self.agent_ids], dim=1)
             adv_state = torch.cat([obs_t[adv] for adv in self.adversary_ids], dim=1)
 
-            # for aid in self.agent_ids:
-            #     a, logit, h_new = self.agents[aid].action(obs_t[aid], last_act[aid], actor_h[aid], model_out=True)
-            #     logits_t[aid] = logit
-            #     actor_h[aid] = h_new
-            #     new_actions[aid] = a
-            # detached_actions = {
-            #     aid: a.detach() if aid != agent_id else a
-            #     for aid, a in new_actions.items()
-            # }
-            # g_act = torch.cat([detached_actions[aid] for aid in self.agent_ids], dim=1)
-
             # get new actions & update hidden
             acts_for_id, logits_t = {}, {}
             for aid in self.agent_ids:
@@ -430,7 +419,7 @@ class MADDPG:
 
                 if self.adversary_ids:
                     local_qs = [
-                        self.agents[adv].local_critic_value(obs_t[adv], a, last_act[adv])
+                        self.agents[adv].local_critic_value(obs_t[adv], acts_for_id[adv], last_act[adv])
                         for adv in self.adversary_ids
                     ]  # local_qs -> [num_adversarys, batch_size]（[[batch_size],[batch_size],[],[],....num_adversarys个]）
                     q_stack = torch.stack(local_qs, dim=1)  # q_stack -> [batch_size,num_adversarys] ([[num_adversarys],[num_adversarys],[],...batch_size个])
