@@ -31,14 +31,15 @@ def setup_logger(name: str, filename: str):
         handler.setFormatter(fmt)
         # 强制 flush
         orig_emit = handler.emit
+
         def flush_emit(rec):
             orig_emit(rec)
             handler.flush()
+
         handler.emit = flush_emit
 
         logger.addHandler(handler)
     return logger
-
 
 
 class MADDPG:
@@ -60,7 +61,7 @@ class MADDPG:
         global_obs_dim = sum(obs_dim for obs_dim, _ in dim_info.values())
         global_act_dim = sum(act_dim for _, act_dim in dim_info.values())
         global_obs_act_dim = global_obs_dim + global_act_dim
-        
+
         # 计算全局状态维度（仅用于追逐者）
         global_state_dim = 0
         for agent_id, (obs_dim, _) in dim_info.items():
@@ -72,29 +73,29 @@ class MADDPG:
         self.agents = {}
         self.num_good = num_good
         self.num_adversaries = num_adversaries
-        
+
         for agent_id, (obs_dim, act_dim) in dim_info.items():
             self.agents[agent_id] = Agent(agent_id, obs_dim, act_dim, global_obs_act_dim, actor_lr, critic_lr)
 
         # 创建基于episode的缓冲区
         self.buffer = EpisodeBuffer(
-            capacity, 
-            dim_info, 
-            num_good, 
-            num_adversaries, 
-            global_obs_dim, 
-            global_act_dim, 
-            max_seq_length=25, 
+            capacity,
+            dim_info,
+            num_good,
+            num_adversaries,
+            global_obs_dim,
+            global_act_dim,
+            max_seq_length=25,
             device='cpu'
         )
-        
+
         self.dim_info = dim_info
         self.capacity = capacity
         self.max_seq_length = 25
         self.agent_ids = list(dim_info.keys())
         self.adversary_ids = [aid for aid in self.agent_ids if "adversary" in aid]
         self.evader_ids = [aid for aid in self.agent_ids if "adversary" not in aid]
-        
+
         # 为追逐者初始化QMIX网络
         self.Mixing_net = QMixNet(
             state_shape=global_state_dim,  # 所有追逐者观测维度的和，不要动作维度
@@ -121,7 +122,7 @@ class MADDPG:
         # 用于基于episode的训练
         self.hidden_states = {agent_id: self.agents[agent_id].init_hidden() for agent_id in self.agent_ids}
 
-    def add(self, last_action, obs, action, reward, next_obs, done, total_reward=None):
+    def add(self, last_action, obs, action, reward, next_obs, done, total_reward):
         """
         添加一个时间步到当前episode缓冲区
         参数:
@@ -135,13 +136,14 @@ class MADDPG:
         """
         # 直接使用环境返回的total_reward，不需要再计算
         self.buffer.add_step(last_action, obs, action, reward, next_obs, done, total_reward)
-        
+
     def end_episode(self):
         """结束当前episode并将其存储在缓冲区中"""
         self.buffer.end_episode()
         # 在episode结束时重置所有智能体的隐藏状态
         for agent_id in self.agent_ids:
             self.hidden_states[agent_id] = self.agents[agent_id].init_hidden().to(self.hidden_states[agent_id].device)
+
     def select_action(self, obs, last_action):
         """
         使用所有智能体的actor网络选择动作
@@ -155,325 +157,241 @@ class MADDPG:
         for agent_id in self.agent_ids:
             o = torch.from_numpy(obs[agent_id]).unsqueeze(0).float()  # [1, obs_dim]
             la = torch.from_numpy(last_action[agent_id]).unsqueeze(0).float()  # [1, act_dim]
-            
+
             # 使用为此智能体存储的隐藏状态
             hidden = self.hidden_states[agent_id]
-            
+
             # 获取动作并更新隐藏状态
             action, new_hidden = self.agents[agent_id].action(o, la, hidden)
-            
+
             # 更新隐藏状态以供下一步使用
             self.hidden_states[agent_id] = new_hidden
-            
+
             # 转换为numpy并移除批次维度
             actions[agent_id] = action.squeeze(0).cpu().detach().numpy()
             self.logger.info(f'{agent_id} action: {actions[agent_id]}')
-            
+
         return actions
-    
-    def compute_next_actions(self, batch_next_obs, batch_actions, target_h_states, valid_mask):
-        """
-        计算所有智能体的下一步动作并更新它们的隐藏状态。
-        参数:
-            batch_next_obs: 每个智能体的下一步观测字典
-            batch_actions: 每个智能体的当前动作字典
-            target_h_states: 每个智能体的隐藏状态字典
-            valid_mask: 有效样本的掩码
-        返回:
-            next_actions: 所有智能体的下一步动作列表
-            updated_h_states: 所有智能体的更新后的隐藏状态
-        """
-        next_actions = []
-        updated_h_states = {}
 
-        for agent_id in self.agent_ids:
-            agent = self.agents[agent_id]
-            if agent_id in batch_next_obs and len(batch_next_obs[agent_id]) > 0:
-                # 确保valid_mask是布尔类型
-                valid_mask = valid_mask.bool()
-                
-                # 获取当前时间步的观测和动作
-                current_time_step = 0  # 假设我们总是使用第一个时间步
-                if current_time_step < len(batch_next_obs[agent_id]):
-                    next_agent_obs = batch_next_obs[agent_id][current_time_step]
-                    last_agent_action = batch_actions[agent_id][current_time_step]
-                    
-                    # 确保张量维度正确
-                    if next_agent_obs.dim() == 1:
-                        next_agent_obs = next_agent_obs.unsqueeze(0)
-                    if last_agent_action.dim() == 1:
-                        last_agent_action = last_agent_action.unsqueeze(0)
-                    
-                    # 使用valid_mask选择有效的样本
-                    valid_indices = torch.nonzero(valid_mask).squeeze()
-                    if valid_indices.numel() > 0:
-                        if valid_indices.dim() == 0:  # 如果只有一个有效索引
-                            valid_indices = valid_indices.unsqueeze(0)
-                        
-                        # 确保索引不超出范围
-                        valid_indices = valid_indices[valid_indices < next_agent_obs.size(0)]
-                        if valid_indices.numel() > 0:
-                            next_agent_obs = next_agent_obs[valid_indices]
-                            last_agent_action = last_agent_action[valid_indices]
-                            target_h_state = target_h_states[agent_id][valid_indices]
-                            
-                            next_a, new_h_state = agent.target_action(
-                                next_agent_obs, last_agent_action, target_h_state
-                            )
-                            next_actions.append(next_a)
-                            updated_h_states[agent_id] = new_h_state
-                        else:
-                            # 如果没有有效样本，创建空张量
-                            act_dim = self.dim_info[agent_id][1]
-                            next_actions.append(torch.zeros(0, act_dim, device=next_agent_obs.device))
-                            updated_h_states[agent_id] = target_h_states[agent_id]
-                    else:
-                        # 如果没有有效样本，创建空张量
-                        act_dim = self.dim_info[agent_id][1]
-                        next_actions.append(torch.zeros(0, act_dim, device=next_agent_obs.device))
-                        updated_h_states[agent_id] = target_h_states[agent_id]
-                else:
-                    # 如果时间步超出范围，创建空张量
-                    act_dim = self.dim_info[agent_id][1]
-                    next_actions.append(torch.zeros(0, act_dim, device=batch_next_obs[agent_id][0].device))
-                    updated_h_states[agent_id] = target_h_states[agent_id]
-            else:
-                # 如果agent_id不在batch_next_obs中，创建空张量
-                act_dim = self.dim_info[agent_id][1]
-                next_actions.append(torch.zeros(0, act_dim, device=next(batch_next_obs.values())[0][0].device))
-                updated_h_states[agent_id] = target_h_states[agent_id]
-
-        return next_actions, updated_h_states
+    # def compute_next_actions(self, batch_next_obs, batch_actions, target_h_states, valid_mask):
+    #     """
+    #     计算所有智能体的下一步动作并更新它们的隐藏状态。
+    #     参数:
+    #         batch_next_obs: 每个智能体的下一步观测字典
+    #         batch_actions: 每个智能体的当前动作字典
+    #         target_h_states: 每个智能体的隐藏状态字典
+    #         valid_mask: 有效样本的掩码
+    #     返回:
+    #         next_actions: 所有智能体的下一步动作列表
+    #         updated_h_states: 所有智能体的更新后的隐藏状态
+    #     """
+    #     next_actions = []
+    #     updated_h_states = {}
+    #
+    #     for agent_id in self.agent_ids:
+    #         agent = self.agents[agent_id]
+    #         if agent_id in batch_next_obs and len(batch_next_obs[agent_id]) > 0:
+    #             # 确保valid_mask是布尔类型
+    #             valid_mask = valid_mask.bool()
+    #
+    #             # 获取当前时间步的观测和动作
+    #             current_time_step = 0  # 假设我们总是使用第一个时间步
+    #             if current_time_step < len(batch_next_obs[agent_id]):
+    #                 next_agent_obs = batch_next_obs[agent_id][current_time_step]
+    #                 last_agent_action = batch_actions[agent_id][current_time_step]
+    #
+    #                 # 确保张量维度正确
+    #                 if next_agent_obs.dim() == 1:
+    #                     next_agent_obs = next_agent_obs.unsqueeze(0)
+    #                 if last_agent_action.dim() == 1:
+    #                     last_agent_action = last_agent_action.unsqueeze(0)
+    #
+    #                 # 使用valid_mask选择有效的样本
+    #                 valid_indices = torch.nonzero(valid_mask).squeeze()
+    #                 if valid_indices.numel() > 0:
+    #                     if valid_indices.dim() == 0:  # 如果只有一个有效索引
+    #                         valid_indices = valid_indices.unsqueeze(0)
+    #
+    #                     # 确保索引不超出范围
+    #                     valid_indices = valid_indices[valid_indices < next_agent_obs.size(0)]
+    #                     if valid_indices.numel() > 0:
+    #                         next_agent_obs = next_agent_obs[valid_indices]
+    #                         last_agent_action = last_agent_action[valid_indices]
+    #                         target_h_state = target_h_states[agent_id][valid_indices]
+    #
+    #                         next_a, new_h_state = agent.target_action(
+    #                             next_agent_obs, last_agent_action, target_h_state
+    #                         )
+    #                         next_actions.append(next_a)
+    #                         updated_h_states[agent_id] = new_h_state
+    #                     else:
+    #                         # 如果没有有效样本，创建空张量
+    #                         act_dim = self.dim_info[agent_id][1]
+    #                         next_actions.append(torch.zeros(0, act_dim, device=next_agent_obs.device))
+    #                         updated_h_states[agent_id] = target_h_states[agent_id]
+    #                 else:
+    #                     # 如果没有有效样本，创建空张量
+    #                     act_dim = self.dim_info[agent_id][1]
+    #                     next_actions.append(torch.zeros(0, act_dim, device=next_agent_obs.device))
+    #                     updated_h_states[agent_id] = target_h_states[agent_id]
+    #             else:
+    #                 # 如果时间步超出范围，创建空张量
+    #                 act_dim = self.dim_info[agent_id][1]
+    #                 next_actions.append(torch.zeros(0, act_dim, device=batch_next_obs[agent_id][0].device))
+    #                 updated_h_states[agent_id] = target_h_states[agent_id]
+    #         else:
+    #             # 如果agent_id不在batch_next_obs中，创建空张量
+    #             act_dim = self.dim_info[agent_id][1]
+    #             next_actions.append(torch.zeros(0, act_dim, device=next(batch_next_obs.values())[0][0].device))
+    #             updated_h_states[agent_id] = target_h_states[agent_id]
+    #
+    #     return next_actions, updated_h_states
 
     def learn(self, batch_size, gamma):
-        """
-        训练函数，包含MADDPG和QMIX的更新逻辑
-        参数:
-            batch_size: 批量大小
-            gamma: 折扣因子
-        """
         if len(self.buffer) < batch_size:
             return
-        
-        # 从缓冲区采样一个批次的数据
+
+        # 1) sample a batch of episodes
         batch = self.buffer.sample(batch_size)
-        max_t = self.max_seq_length
+        T = self.max_seq_length
 
-        # === 初始化 ===
-        # 初始化所有智能体的目标网络和当前网络的隐藏状态
-        target_h = {aid: self.agents[aid].target_actor.init_hidden().repeat(batch_size, 1) for aid in self.agent_ids}
-        actor_h = {aid: self.agents[aid].actor.init_hidden().repeat(batch_size, 1) for aid in self.agent_ids}
+        # 2) init all hidden states
 
-        # 存储用于训练QMIX的数据
-        qmix_data = {
-            'local_qs': [],        # 局部Q值
-            'target_local_qs': [], # 目标局部Q值
-            'states': [],          # 状态
-            'next_states': [],     # 下一状态
-            'total_rewards': [],   # 团队总奖励
-            'dones': [],           # 完成标志
-        }
+        target_actor_h = {aid: self.agents[aid].target_actor.init_hidden().repeat(batch_size, 1)
+                    for aid in self.agent_ids}
 
-        # 存储用于训练全局critic的数据
-        critic_data = {
-            'q_eval': {aid: [] for aid in self.agent_ids},  # 评估Q值
-            'q_target': {aid: [] for aid in self.agent_ids}, # 目标Q值
-            'mask': {aid: [] for aid in self.agent_ids}      # 有效样本掩码
-        }
+        # 计算target_action
+        target_actions_dict = {agent_id: [] for agent_id in
+                               self.agents.keys()}  # {agent_id: [batch_size, max_episode_length, act_dim)}
+        target_actions = []  # [n_agents, batch_size, act_dim]
+        for t in range(T):
+            for agent_id, agent in self.agents.items():
+                target_act, new_hidden = agent.target_action(
+                    batch['next_obs'][agent_id][:, t:t+1],
+                    batch['actions'][agent_id][:, t:t+1],
+                    target_actor_h[agent_id]
+                )  # target_act -> [batch_size, act_dim]
+                target_actor_h[agent_id] = new_hidden
+                target_actions_dict[agent_id].append(target_act)
+        # 循环结束后target_actions_dict[agent_id] -> [max_episode_length, batch_size, act_dim]
 
-        # 对每个时间步进行训练
-        for t in range(max_t):
-            # 获取当前时间步有效的样本掩码
-            mask = batch['lengths'] > t
-            valid_n = mask.sum().item()
-            if valid_n == 0:
+        # 将列表转换为numpy数组，并调整维度
+        for agent_id in target_actions_dict.keys():
+            target_actions_dict[agent_id] = np.stack(target_actions_dict[agent_id],
+                                                     axis=1)  # 转换为[batch_size, max_episode_length, act_dim]
+
+        # ========== 1) GLOBAL CRITIC (MADDPG) + QMIX LOCAL Q UPDATES ==========
+        for t in range(T-1):
+            mask = batch['lengths'] > t  # batch['lengths']应该是batch_size个长度值
+            if mask.sum() == 0:  # 说明抽到一组空数据
                 continue
 
-            # === 构造全局状态和动作 ===
-            # 将所有智能体的观测和动作拼接成全局状态和动作
-            global_obs = torch.cat([batch['obs'][aid][mask, t] for aid in self.agent_ids], dim=-1)
-            global_act = torch.cat([batch['actions'][aid][mask, t] for aid in self.agent_ids], dim=-1)
-            next_global_obs = torch.cat([batch['next_obs'][aid][mask, t] for aid in self.agent_ids], dim=-1)
-            next_act = []
+            # --- build global state/action and next_state/action ---
+            global_obs = torch.cat([batch['obs'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)  # ???不确定，obs里面：[batch_size,t,单个obs_dim]
+            # [batch['obs'][aid] : [batch_size, max_episode_length, obs_dim]
+            global_act = torch.cat([batch['actions'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)
+            next_global_obs = torch.cat([batch['next_obs'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)
+            # batch['actions'][aid] : [batch_size, max_episode_length, act_dim]
+            # next actions via target actors
+            next_acts = torch.cat([target_actions_dict[aid][:, t:t+1]for aid in self.agent_ids], dim=1)
 
-            # === 计算目标动作 ===
-            # 使用目标网络计算每个智能体的下一步动作
-            for aid in self.agent_ids:
-                obs_next = batch['next_obs'][aid][mask, t]
-                last_act = batch['actions'][aid][mask, t]
-                target_a, new_h = self.agents[aid].target_action(obs_next, last_act, target_h[aid][mask])
-                next_act.append(target_a)
-                target_h[aid][mask] = new_h
-
-            next_global_act = torch.cat(next_act, dim=-1)
-
-            # === 收集critic训练数据 ===
+            # --- MADDPG 的全局critic部分的损失计算 ---
             for aid in self.agent_ids:
                 agent = self.agents[aid]
-                q_eval = agent.critic_value(global_obs, global_act)
-                q_next = agent.target_critic_value(next_global_obs, next_global_act).detach()
-                r = batch['rewards'][aid][mask, t]
-                done = batch['dones'][aid][mask, t]
-                q_target = r + gamma * (1 - done) * q_next
-                
-                # 存储critic训练数据
-                critic_data['q_eval'][aid].append(q_eval)
-                critic_data['q_target'][aid].append(q_target)
-                critic_data['mask'][aid].append(mask)
+                global_q_eval = agent.critic_value(global_obs, global_act)  # [batch_size, 1]
+                global_q_next = agent.target_critic_value(next_global_obs, next_acts).detach()
+                r = batch['rewards'][aid][:, t:t+1]
+                d = batch['dones'][aid][:, t:t+1]
+                q_target = r + gamma * (1 - d) * global_q_next
+                # 下面的可能应该在t循环外更新
+                critic_loss = F.mse_loss(global_q_eval, q_target)
+                agent.update_critic(critic_loss)
+                self.global_q_logger.info(f"{aid} Critic Loss: {critic_loss.item():.4f}")
 
-            # === critic部分：局部Q + QMIX ===
-            # 收集追逐者的局部Q值和状态信息
-            adversary_q, target_adversary_q, adversary_states, next_states = [], [], [], []
+            # --- mixing 网络和损失计算 ---
+            adv_qs, adv_q_nexts, adv_states, adv_next_states = [], [], [], []
             for aid in self.adversary_ids:
                 agent = self.agents[aid]
-                obs = batch['obs'][aid][mask, t]
-                act = batch['actions'][aid][mask, t]
-                last = batch['last_actions'][aid][mask, t]
-                next_obs = batch['next_obs'][aid][mask, t]
-                next_a = next_act[self.agent_ids.index(aid)]
+                obs = batch['obs'][aid][:, t:t+1] # [batch_size, 1, obs_dim]
+                act = batch['actions'][aid][:, t:t+1]
+                last_act = batch['last_actions'][aid][:, t:t+1]
+                obs_n = batch['next_obs'][aid][:, t:t+1]
+                next_a = next_acts[self.agent_ids.index(aid)]
 
-                # 计算当前和目标的局部Q值
-                q = agent.agent_q_value(obs, act, last)
-                q_ = agent.target_agent_q_value(next_obs, next_a, act).detach()
-                adversary_q.append(q)
-                target_adversary_q.append(q_)
-                adversary_states.append(obs)
-                next_states.append(next_obs)
+                q_loc = agent.local_critic_value(obs, act, last_act)  # q_loc -> [batch_size]
+                q_loc_n = agent.target_local_critic_value(obs_n, next_a, act).detach()
+                adv_qs.append(q_loc)  # 循环后 adv_qs -> [num_adversarys, batch_size]（[[batch_size],[batch_size],[],[],....num_adversarys个]）
+                adv_q_nexts.append(q_loc_n)
+                adv_states.append(obs)  # adv_states -> [num_adversarys, batch_size, obs_dim]
+                adv_next_states.append(obs_n)
 
-            # 如果有追逐者，准备QMIX训练数据
-            if adversary_q:
-                q_stack = torch.stack(adversary_q, dim=1)
-                q_next_stack = torch.stack(target_adversary_q, dim=1)
-                state_stack = torch.cat(adversary_states, dim=1)
-                next_state_stack = torch.cat(next_states, dim=1)
-                team_r = batch['total_rewards'][:, t][mask]
-                dones = batch['dones'][self.adversary_ids[0]][mask, t]
+            if adv_qs:
+                q_stack = torch.stack(adv_qs, dim=1)  # q_stack -> [batch_size,num_adversarys] ([[num_adversarys],[num_adversarys],[],...batch_size个])
+                q_next_stack = torch.stack(adv_q_nexts, dim=1)
+                state_stack = torch.cat(adv_states, dim=1)
+                # adv_states 的组成单元是num_adversarys个形如[batch_size, obs_dim]的列表，所以dim=1对obs堆叠，堆后形如[batch_size, num_adversarys * obs_dim]
+                next_state_st = torch.cat(adv_next_states, dim=1)
+                #4/19改到这
+                team_r = batch['total_rewards'][:, t:t+1].unsqueeze(-1)  # 在最后一个维度上扩1维，从形状 (batch_size,) 变为 (batch_size, 1)。
+                dones = batch['dones'][self.adversary_ids[0]][:, t:t+1].unsqueeze(-1)  #？？用第一个追逐者是否结束来确定整个qtot是否有效，不合适吧？
 
-                # 存储QMIX训练数据
-                qmix_data['local_qs'].append(q_stack)
-                qmix_data['target_local_qs'].append(q_next_stack)
-                qmix_data['states'].append(state_stack)
-                qmix_data['next_states'].append(next_state_stack)
-                qmix_data['total_rewards'].append(team_r)
-                qmix_data['dones'].append(dones)
+                q_tot = self.Mixing_net(q_stack, state_stack)  # q_tot -> [batch_size, 1]
+                q_next_tot = self.Mixing_target_net(q_next_stack, next_state_st).detach()
+                mix_target = team_r + gamma * (1 - dones) * q_next_tot
+                mix_loss = F.mse_loss(q_tot, mix_target)
+                self.update_mixing(mix_loss)
+                self.qmix_logger.info(f"QMIX Loss: {mix_loss.item():.4f}")
 
-        # === 更新全局critic网络 ===
-        for aid in self.agent_ids:
-            if critic_data['q_eval'][aid]:  # 确保有数据
-                # 拼接所有时间步的数据
-                q_eval = torch.cat(critic_data['q_eval'][aid], dim=0)
-                q_target = torch.cat(critic_data['q_target'][aid], dim=0)
-                mask = torch.cat(critic_data['mask'][aid], dim=0)
-                
-                # 计算损失并更新
-                loss = F.mse_loss(q_eval[mask], q_target[mask])
-                self.agents[aid].update_critic(loss)
-                self.global_q_logger.info(f"{aid} Critic Loss: {loss.item()}")
+        # ========== 全局Q、mixing、局部Q网络更新 ==========
 
-        # === 训练Mixing网络 ===
-        if qmix_data['local_qs']:
-            # 准备QMIX训练数据
-            q_stack = torch.cat(qmix_data['local_qs'], dim=0)
-            target_q_stack = torch.cat(qmix_data['target_local_qs'], dim=0)
-            states = torch.cat(qmix_data['states'], dim=0)
-            next_states = torch.cat(qmix_data['next_states'], dim=0)
-            total_rewards = torch.cat(qmix_data['total_rewards'], dim=0).unsqueeze(-1)
-            dones = torch.cat(qmix_data['dones'], dim=0).unsqueeze(-1)
 
-            # 计算QMIX的Q值和目标Q值
-            q_tot = self.Mixing_net(q_stack, states)
-            q_next_tot = self.Mixing_target_net(target_q_stack, next_states)
-            target = total_rewards + gamma * (1 - dones) * q_next_tot
-            loss = F.mse_loss(q_tot, target.detach())
-            self.update_mixing(loss)
-            self.qmix_logger.info(f"QMIX Loss: {loss.item()}")
-
-        # === Actor 训练：FACMAC 风格 ===
-
-        # 1) 初始化所有 actor 的隐藏状态
-        actor_h = {
-            aid: self.agents[aid].actor.init_hidden().repeat(batch_size, 1)
-            for aid in self.agent_ids
-        }
-        # 2) 清零所有 actor 优化器梯度
-        for aid in self.agent_ids:
-            self.agents[aid].actor_optimizer.zero_grad()
+        # ========== 2) ACTOR UPDATE (FACMAC style) ==========
+        actor_h = {aid: self.agents[aid].actor.init_hidden().repeat(batch_size, 1)
+                   for aid in self.agent_ids}
 
         total_actor_loss = 0.0
         count = 0
 
-        # 3) 按时间步生成动作 & 累积 loss
-        for t in range(max_t):
+        # replay the same T steps to compute policy gradient
+        for t in range(T):
             mask = batch['lengths'] > t
-            if mask.sum().item() == 0:
+            if mask.sum() == 0:
                 continue
 
-            # 3.1) 准备每个 agent 的 obs_t 和 last_action_t
-            obs_t  = {x: batch['obs'][x][mask, t]       for x in self.agent_ids}
-            last_t = {x: batch['last_actions'][x][mask, t] for x in self.agent_ids}
+            # build per‐agent obs & last_act
+            obs_t = {aid: batch['obs'][aid][:, t:t+1] for aid in self.agent_ids}
+            act = {aid: batch['actions'][aid][:, t:t+1] for aid in self.agent_ids}  # [aid]   [banch_size, act_dim]
+            last_act = {aid: batch['last_actions'][aid][:, t:t+1] for aid in self.agent_ids}
+            # global obs & joint action
+            global_obs = torch.cat([batch['obs'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)
+            adv_state = torch.cat([obs_t[adv] for adv in self.adversary_ids], dim=1)
 
-            # 3.2) 用 actor 网络生成动作并更新隐藏状态
-            acts_t   = {}
-            logits_t = {}
-            for x in self.agent_ids:
-                act, logit, new_h = self.agents[x].action(
-                    obs_t[x], last_t[x], actor_h[x][mask], model_out=True
-                )
-                acts_t[x]   = act
-                logits_t[x] = logit
-                actor_h[x][mask] = new_h
+            # get new actions & update hidden
+            acts_for_id, logits_t = {}, {}
+            for aid in self.agent_ids:
+                a, logit, h_new = self.agents[aid].action(obs_t[aid], last_act[aid], actor_h[aid], model_out=True)
+                acts_for_id = {**act, aid: a}  # 创建新动作字典
+                logits_t[aid] = logit
+                actor_h[aid] = h_new
 
-            # 3.3) 构建全局 obs & act
-            global_obs     = torch.cat([obs_t[x] for x in self.agent_ids], dim=-1)
-            new_global_act = torch.cat([acts_t[x] for x in self.agent_ids], dim=-1)
+                g_act = torch.cat([acts_for_id[aid] for aid in self.agent_ids], dim=1)  # [batch_size, act_dim * num_agents]
+                q_global = self.agents[aid].critic_value(global_obs, g_act)  # [batch_size, 1]
 
-            # 3.4) 计算全局 Q（detach，避免反传到 critic）
-            q_global = {
-                x: self.agents[x].critic_value(global_obs, new_global_act)
-                for x in self.agent_ids
-            }
+                if self.adversary_ids:
+                    local_qs = [
+                        self.agents[adv].local_critic_value(obs_t[adv], acts_for_id[adv], last_act[adv])
+                        for adv in self.adversary_ids
+                    ]  # local_qs -> [num_adversarys, batch_size]（[[batch_size],[batch_size],[],[],....num_adversarys个]）
+                    q_stack = torch.stack(local_qs, dim=1)  # q_stack -> [batch_size,num_adversarys] ([[num_adversarys],[num_adversarys],[],...batch_size个])
 
-            # 3.5) FACMAC: 计算团队 Q_tot（不 detach，梯度可传回 actor）
-            if self.adversary_ids:
-                local_qs = [
-                    self.agents[adv].agent_q_value(
-                        obs_t[adv], acts_t[adv], last_t[adv]
-                    )
-                    for adv in self.adversary_ids
-                ]  # list of [batch]
-                q_stack  = torch.stack(local_qs, dim=1)   # [batch, n_adversaries]
-                adv_state = torch.cat(
-                    [obs_t[adv] for adv in self.adversary_ids], dim=1
-                )  # [batch, sum(obs_dims)]
-                q_tot    = self.Mixing_net(q_stack, adv_state).squeeze(-1)  # [batch]
+                    q_tot = self.Mixing_net(q_stack, adv_state).squeeze(-1)
+                    combined_q = q_global + q_tot
 
-            # 3.6) 对每个 agent 累积 loss
-            for x in self.agent_ids:
-                if x in self.adversary_ids:
-                    # FACMAC 用 Q_tot；如果想保留 global Q 也可写 0.3*q_tot + 0.7*q_global[x]
-                    # q_comb = q_tot
-                    q_comb = q_global[x]
                 else:
-                    q_comb = q_global[x]
+                    combined_q = q_global
 
-                # 单步 loss = -E[q_comb] + L2 正则
-                loss_t = - q_comb.mean() + 1e-3 * logits_t[x].pow(2).mean()
-                total_actor_loss += loss_t
-                count += 1
 
-        # 4) 平均并一次性 backward
-        if count > 0:
-            total_actor_loss = total_actor_loss / count
-            self.actor_logger.info(f"Actor Loss: {total_actor_loss.item():.4f}")
-            total_actor_loss.backward()
 
-        # 5) 梯度裁剪 & 更新所有 actor
-        for aid in self.agent_ids:
-            clip_val = 0.8 if aid in self.adversary_ids else 0.5
-            torch.nn.utils.clip_grad_norm_(
-                self.agents[aid].actor.parameters(), clip_val
-            )
-            self.agents[aid].actor_optimizer.step()
 
     def update_mixing(self, qmix_loss):
         """
@@ -484,45 +402,46 @@ class MADDPG:
         # 重置所有相关网络的梯度
         self.mixer_optimizer.zero_grad()
         for agent_id in self.adversary_ids:
-            self.agents[agent_id].q_agent_optimizer.zero_grad()
+            self.agents[agent_id].local_critic_optimizer.zero_grad()
 
         # 反向传播计算梯度
         qmix_loss.backward()
 
         # 应用梯度裁剪，使用不同的阈值
         # QMIX网络使用较大的阈值，因为需要处理多个智能体的信息
-        torch.nn.utils.clip_grad_norm_(self.Mixing_net.parameters(), 10.0)
-        
+        torch.nn.utils.clip_grad_norm_(self.Mixing_net.parameters(), 0.5)
+
         # 追逐者的局部Q网络使用较小的阈值，因为只处理单个智能体的信息
         for agent_id in self.adversary_ids:
             torch.nn.utils.clip_grad_norm_(
-                self.agents[agent_id].q_agent.parameters(), 
-                max_norm=5.0
+                self.agents[agent_id].local_critic.parameters(),
+                max_norm=0.5
             )
 
         # 更新网络参数
         self.mixer_optimizer.step()
         for agent_id in self.adversary_ids:
-            self.agents[agent_id].q_agent_optimizer.step()
+            self.agents[agent_id].local_critic_optimizer.step()
 
     def update_target(self, tau):
         """
         目标网络的软更新
         tau: 插值参数
         """
+
         def soft_update(from_network, to_network):
             for from_p, to_p in zip(from_network.parameters(), to_network.parameters()):
                 to_p.data.copy_(tau * from_p.data + (1.0 - tau) * to_p.data)
 
         # 更新QMIX目标网络
         soft_update(self.Mixing_net, self.Mixing_target_net)
-        
+
         # 更新所有智能体网络
         for agent_id, agent in self.agents.items():
             soft_update(agent.actor, agent.target_actor)
             soft_update(agent.critic, agent.target_critic)
             if agent_id in self.adversary_ids:
-                soft_update(agent.q_agent, agent.target_q_agent)
+                soft_update(agent.local_critic, agent.target_q_agent)
 
     def save(self, reward, total_rewards):
         """保存模型参数和训练结果"""

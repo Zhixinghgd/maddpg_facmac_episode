@@ -18,7 +18,7 @@ class Agent:
         self.global_obs_act_dim = global_obs_act_dim
         
         # Actor网络：输入 = [当前观测, 上一个动作, 隐藏状态]
-        self.actor = RNNAgent(obs_dim + act_dim, act_dim, self.rnn_hidden_dim)
+        self.actor = RNNAgent(obs_dim, act_dim, self.rnn_hidden_dim)
         
         # Critic网络：输入 = [全局观测, 全局动作]
         # 注意：global_obs_dim是所有智能体观测维度的总和
@@ -34,9 +34,9 @@ class Agent:
         if agent_id.startswith("adversary_") or agent_id.startswith("leadadversary_"):  # 追逐者的Q部分添加QMIX思想
             print(f"{agent_id} 是一个追逐者。")
             # 追逐者的局部Q网络：输入 = [局部观测, 当前动作, 上一个动作]
-            self.q_agent = MLPNetwork(obs_dim + act_dim + act_dim, 1)
-            self.q_agent_optimizer = Adam(self.q_agent.parameters(), lr=critic_lr)
-            self.target_q_agent = deepcopy(self.q_agent)
+            self.local_critic = MLPNetwork(obs_dim + act_dim + act_dim, 1)
+            self.local_critic_optimizer = Adam(self.local_critic.parameters(), lr=critic_lr)
+            self.target_q_agent = deepcopy(self.local_critic)
         elif agent_id.startswith("agent_"):  # 逃跑者由纯maddpg驱动
             print(f"{agent_id} 是一个逃跑者。")
         else:
@@ -53,29 +53,24 @@ class Agent:
             obs: 当前观测 [batch_size, obs_dim]
             l_a: 上一个动作 [batch_size, act_dim]
             hidden_state: 上一个隐藏状态，如果为None则初始化
-            model_out: 是否返回logits和隐藏状态
+            model_out: 是否返回logits
         返回:
             action: 选择的动作
             logits: 动作logits（可选）
-            new_hidden: 新的隐藏状态（可选）
+            new_hidden: 新的隐藏状态
         """
-        # 确保输入维度正确
-        if obs.dim() == 1:
-            obs = obs.unsqueeze(0)
-        if l_a.dim() == 1:
-            l_a = l_a.unsqueeze(0)
             
-        x = torch.cat([obs, l_a], dim=1)
+        x = torch.cat([obs, l_a], dim=1)  # x.shape = [batch_size, obs_dim + act_dim] 同维拼接
         
         if hidden_state is None:
-            hidden_state = self.actor.init_hidden().repeat(x.size(0), 1)
+            hidden_state = self.actor.init_hidden().repeat(x.size(0), 1)  # hidden_state.shape = [batch_size, rnn_hidden_dim]
             
         logits, new_hidden = self.actor(x, hidden_state)
         action = torch.sigmoid(logits)  # 使用sigmoid将动作限制在[0,1]范围内
         
         if model_out:
             return action, logits, new_hidden
-        return action, new_hidden
+        return action, new_hidden  # action.shape = [batch_size, act_dim]
 
     def target_action(self, obs, l_a, hidden_state=None):
         """使用目标网络生成动作（用于学习稳定性）"""
@@ -86,19 +81,8 @@ class Agent:
         if hidden_state is None:
             hidden_state = self.target_actor.init_hidden().repeat(x.size(0), 1)
         
-        # 确保输入维度与网络期望的输入维度一致
-        if x.shape[1] != self.target_actor.fc1.weight.shape[1]:
-            if x.shape[1] < self.target_actor.fc1.weight.shape[1]:
-                # 如果输入维度小于预期，用零填充
-                padding = torch.zeros(x.size(0), self.target_actor.fc1.weight.shape[1] - x.shape[1], 
-                                     device=x.device)
-                x = torch.cat([x, padding], dim=1)
-            else:
-                # 如果输入维度大于预期，截断
-                x = x[:, :self.target_actor.fc1.weight.shape[1]]
-        
         logits, new_hidden = self.target_actor(x, hidden_state)
-        return torch.sigmoid(logits), new_hidden
+        return torch.sigmoid(logits).detach(), new_hidden
 
     def critic_value(self, state, action):
         """
@@ -107,15 +91,15 @@ class Agent:
             state: 全局状态张量 [batch_size, total_obs_dim]
             action: 全局动作张量 [batch_size, total_act_dim]
         """
-        x = torch.cat([state, action], dim=1)
-        return self.critic(x).squeeze(1)
+        x = torch.cat([state, action], dim=1)  # x.shape = [batch_size, total_obs_dim + total_act_dim]
+        return self.critic(x).squeeze(1)  # 输出维度为[batch_size, 1]，squeeze(1)去掉最后一个维度
 
     def target_critic_value(self, state, action):
         """使用目标网络计算critic值"""
         x = torch.cat([state, action], dim=1)
         return self.target_critic(x).squeeze(1)
 
-    def agent_q_value(self, state, action, last_action):
+    def local_critic_value(self, state, action, last_action):
         """
         计算单个智能体的局部Q值（用于追逐者的QMIX）
         参数:
@@ -124,9 +108,9 @@ class Agent:
             last_action: 单个智能体的上一个动作 [batch_size, act_dim]
         """
         x = torch.cat([state, action, last_action], dim=1)
-        return self.q_agent(x).squeeze(1)
+        return self.local_critic(x).squeeze(1)  # 输出维度为[batch_size, 1]，squeeze(1)去掉最后一个维度
 
-    def target_agent_q_value(self, state, action, last_action):
+    def target_local_critic_value(self, state, action, last_action):
         """使用目标网络计算局部Q值"""
         x = torch.cat([state, action, last_action], dim=1)
         return self.target_q_agent(x).squeeze(1)
@@ -148,32 +132,32 @@ class Agent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
         self.critic_optimizer.step()
+    #
+    # def update_local_critic(self, loss):
+    #     """更新局部Q网络，使用梯度裁剪"""
+    #     self.local_critic_optimizer.zero_grad()
+    #     loss.backward()
+    #     torch.nn.utils.clip_grad_norm_(self.local_critic.parameters(), 0.5)
+    #     self.local_critic_optimizer.step()
 
-    def update_agent_q(self, loss):
-        """更新局部Q网络，使用梯度裁剪"""
-        self.q_agent_optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q_agent.parameters(), 0.5)
-        self.q_agent_optimizer.step()
-
-    def get_combined_q_value(self, global_state, global_action, local_state, local_action, last_action):
-        """
-        计算追逐者的组合Q值
-        参数:
-            global_state: 全局状态 [batch_size, total_obs_dim]
-            global_action: 全局动作 [batch_size, total_act_dim]
-            local_state: 局部状态 [batch_size, obs_dim]
-            local_action: 局部动作 [batch_size, act_dim]
-            last_action: 上一个动作 [batch_size, act_dim]
-        返回:
-            combined_q: 组合后的Q值
-        """
-        global_q = self.critic_value(global_state, global_action)
-        local_q = self.agent_q_value(local_state, local_action, last_action)
-        
-        # 线性组合全局和局部Q值
-        combined_q = 0.5 * global_q + 0.5 * local_q
-        return combined_q
+    # def get_combined_q_value(self, global_state, global_action, local_state, local_action, last_action):
+    #     """
+    #     计算追逐者的组合Q值
+    #     参数:
+    #         global_state: 全局状态 [batch_size, total_obs_dim]
+    #         global_action: 全局动作 [batch_size, total_act_dim]
+    #         local_state: 局部状态 [batch_size, obs_dim]
+    #         local_action: 局部动作 [batch_size, act_dim]
+    #         last_action: 上一个动作 [batch_size, act_dim]
+    #     返回:
+    #         combined_q: 组合后的Q值
+    #     """
+    #     global_q = self.critic_value(global_state, global_action)
+    #     local_q = self.local_critic_value(local_state, local_action, last_action)
+    #
+    #     # 线性组合全局和局部Q值
+    #     combined_q = 0.5 * global_q + 0.5 * local_q
+    #     return combined_q
 
 
 class MLPNetwork(nn.Module):
@@ -203,12 +187,12 @@ class MLPNetwork(nn.Module):
 
 class RNNAgent(nn.Module):
     """基于RNN的actor网络，用于序列决策"""
-    def __init__(self, input_shape, n_actions, rnn_hidden_dim=64):
+    def __init__(self, obs_dim, action_dim, rnn_hidden_dim=64):
         super(RNNAgent, self).__init__()
         self.rnn_hidden_dim = rnn_hidden_dim
-        self.fc1 = nn.Linear(input_shape, rnn_hidden_dim)
+        self.fc1 = nn.Linear(obs_dim, rnn_hidden_dim)
         self.rnn = nn.GRUCell(rnn_hidden_dim, rnn_hidden_dim)
-        self.fc2 = nn.Linear(rnn_hidden_dim, n_actions)
+        self.fc2 = nn.Linear(rnn_hidden_dim, action_dim)
 
     def init_hidden(self):
         """使用与模型相同设备上的零初始化隐藏状态"""
@@ -227,5 +211,5 @@ class RNNAgent(nn.Module):
         x = F.relu(self.fc1(inputs))
         h_in = hidden_state.reshape(-1, self.rnn_hidden_dim)
         h = self.rnn(x, h_in)
-        actions = self.fc2(h)  # 线性输出（无激活）
+        actions = self.fc2(h)  # 线性输出（无激活）,action函数里做最后一步sigmoid
         return actions, h

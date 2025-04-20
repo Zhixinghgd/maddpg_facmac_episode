@@ -39,16 +39,16 @@ class EpisodeBuffer:
         self._size = 0   # 当前缓冲区大小
         
         # 修改数据结构，按episode存储完整数据
-        self.episodes = []  # 每个episode是一个字典，包含所有智能体的数据，整个episode是列表
+        self.episodes = []  # 每个episode是一个字典，包含所有智能体的数据，整个episodes是列表
         
         self.current_episode = {  # 以'obs'等为键构建的字典，存储当前可能只进行了一半的episode
-            'obs': {aid: [] for aid in self.agent_ids},  # obs也是字典，以agent_id为键
+            'obs': {aid: [] for aid in self.agent_ids},  # obs也是字典，以agent_id为键，用键查到的是列表，里面总共两维，第一维是时间步,第二维就是观测列表
             'next_obs': {aid: [] for aid in self.agent_ids},
             'actions': {aid: [] for aid in self.agent_ids},
             'last_actions': {aid: [] for aid in self.agent_ids},
-            'rewards': {aid: [] for aid in self.agent_ids},
-            'dones': {aid: [] for aid in self.agent_ids},
-            'total_rewards': [],
+            'rewards': {aid: [] for aid in self.agent_ids},  # rewards也是字典，以agent_id为键，用键查到的是列表，里面只有一维，是时间步
+            'dones': {aid: [] for aid in self.agent_ids},  # dones也是字典，以agent_id为键，用键查到的是列表，里面只有一维，是时间步
+            'total_rewards': [],  # total_rewards是列表，里面只有一维，是时间步
             'length': 0
         }
     
@@ -113,7 +113,7 @@ class EpisodeBuffer:
         
         episode_data['total_rewards'] = torch.FloatTensor(np.array(self.current_episode['total_rewards'])).to(self.device)
         
-        # 存储episode
+        # 存储episode，满了后按先进先出重新覆盖
         if len(self.episodes) < self.capacity:
             self.episodes.append(episode_data)
         else:
@@ -153,16 +153,17 @@ class EpisodeBuffer:
             'rewards': {aid: [] for aid in self.agent_ids},
             'dones': {aid: [] for aid in self.agent_ids},
             'total_rewards': [],
-            'lengths': []
+            'lengths': []  # 每一个抽样episode的长度的列表
         }
         
         # 收集episode数据
         for idx in indices:
-            episode = self.episodes[idx]
+            episode = self.episodes[idx]  # 采到的episode，sarsa字典，字典里又是agent_id字典，agent_id字典里是按时间步的列表
             batch_data['lengths'].append(episode['length'])
             
             for agent_id in self.agent_ids:
-                batch_data['obs'][agent_id].append(episode['obs'][agent_id])
+                batch_data['obs'][agent_id].append(episode['obs'][agent_id])  # [batch_size, max_episode_length, obs_dim]
+                # episode['obs'][agent_id]   ：[max_episode_length, obs_dim]
                 batch_data['next_obs'][agent_id].append(episode['next_obs'][agent_id])
                 batch_data['actions'][agent_id].append(episode['actions'][agent_id])
                 batch_data['last_actions'][agent_id].append(episode['last_actions'][agent_id])
