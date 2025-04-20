@@ -56,7 +56,7 @@ if __name__ == '__main__':
     parser.add_argument('--episode_length', type=int, default=25, help='steps per episode')
     parser.add_argument('--learn_interval', type=int, default=4,
                         help='episodes interval between learning time')
-    parser.add_argument('--random_episodes', type=int, default=2000,
+    parser.add_argument('--random_episodes', type=int, default=200,
                         help='random episodes before the agent start to learn')
     parser.add_argument('--tau', type=float, default=0.02, help='soft update parameter')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor')
@@ -127,9 +127,9 @@ if __name__ == '__main__':
         
         # 在随机探索期之后，每隔learn_interval个episode进行一次学习
         if episode >= args.random_episodes and episode % args.learn_interval == 0:
-            # maddpg.learn(args.batch_size, args.gamma)
+            maddpg.learn(args.batch_size, args.gamma)
             # maddpg.qmix_learn(args.batch_size, args.gamma)
-            maddpg.maddpg_learn(args.batch_size, args.gamma)
+            # maddpg.maddpg_learn(args.batch_size, args.gamma)
             maddpg.update_target(args.tau)
         
         # 记录奖励

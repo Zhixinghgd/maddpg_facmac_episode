@@ -329,10 +329,11 @@ class MADDPG:
                 agent = self.agents[aid]
                 global_q_eval = agent.critic_value(global_obs, global_act)  # [batch_size, 1]
                 global_q_next = agent.target_critic_value(next_global_obs, next_acts).detach()
-                r = batch['rewards'][aid][:, t:t+1].view(batch_size, -1)
-                d = batch['dones'][aid][:, t:t+1].view(batch_size, -1)
+                r = batch['rewards'][aid][:, t:t+1].view(-1)
+                d = batch['dones'][aid][:, t:t+1].view(-1)
                 q_target = r + gamma * (1 - d) * global_q_next
                 # 下面的可能应该在t循环外更新
+                # print(global_q_eval.shape ,global_q_next.shape ,r.shape , d.shape , q_target.shape)
                 critic_loss = F.mse_loss(global_q_eval, q_target)
                 q_global_loss[aid].append(critic_loss)
                 # agent.update_critic(critic_loss)
@@ -346,7 +347,8 @@ class MADDPG:
                 act = batch['actions'][aid][:, t:t+1].view(batch_size, -1)
                 last_act = batch['actions'][aid][:, t-1:t].view(batch_size, -1) if t > 0 else torch.zeros_like(act)
                 obs_next = batch['obs'][aid][:, t+1:t+2].view(batch_size, -1)
-                next_a = next_acts[self.agent_ids.index(aid)]
+                # next_a = next_acts[self.agent_ids.index(aid)]    # 出问题
+                next_a = torch.from_numpy(target_actions_dict[aid][:, t:t + 1].astype(np.float32)).view(batch_size, -1)
 
                 q_loc = agent.local_critic_value(obs, act, last_act)  # q_loc -> [batch_size]
                 q_loc_n = agent.target_local_critic_value(obs_next, next_a, act).detach()
@@ -363,8 +365,11 @@ class MADDPG:
                 next_state_st = torch.cat(adv_next_states, dim=1)
                 #4/19改到这
                 team_r = batch['total_rewards'][:, t:t+1] # .unsqueeze(-1) 在最后一个维度上扩1维，从形状 (batch_size,) 变为 (batch_size, 1)。之前按t截取缺一个降维，应该正好和这个升维抵消
-                dones = batch['dones'][self.adversary_ids[0]][:, t:t+1] #.unsqueeze(-1) 同上 ？？用第一个追逐者是否结束来确定整个qtot是否有效，不合适吧？
-
+                # dones = batch['dones'][self.adversary_ids[0]][:, t:t+1] #.unsqueeze(-1) 同上 ？？用第一个追逐者是否结束来确定整个qtot是否有效，不合适吧？
+                dones = torch.stack(
+                    [batch['dones'][aid][:, t] for aid in self.agent_ids],
+                    dim=0
+                ).any(dim=0).float().view(-1, 1)  # [batch_size, 1]
                 q_tot = self.Mixing_net(q_stack, state_stack)  # q_tot -> [batch_size, 1]
                 q_next_tot = self.Mixing_target_net(q_next_stack, next_state_st).detach()
                 mix_target = team_r + gamma * (1 - dones) * q_next_tot
@@ -406,30 +411,70 @@ class MADDPG:
             global_obs = torch.cat([batch['obs'][aid][:, t:t+1].view(batch_size, -1) for aid in self.agent_ids], dim=1)
             adv_state = torch.cat([obs_t[adv] for adv in self.adversary_ids], dim=1)
 
-            # get new actions & update hidden
-            acts_for_id, logits_t = {}, {}
+            #原actor loss计算方式，除了自身都是采样动作
+            # acts_for_id, logits_t = {}, {}
+            # for aid in self.agent_ids:
+            #     a, logit, h_new = self.agents[aid].action(obs_t[aid], last_act[aid], actor_h[aid], model_out=True)
+            #     acts_for_id = {**act, aid: a}  # 创建新动作字典
+            #     logits_t[aid] = logit
+            #     actor_h[aid] = h_new
+            #
+            #     g_act = torch.cat([acts_for_id[aid] for aid in self.agent_ids], dim=1)  # [batch_size, act_dim * num_agents]
+            #     q_global = self.agents[aid].critic_value(global_obs, g_act)  # [batch_size, 1]
+            #
+            #     if self.adversary_ids:
+            #         local_qs = [
+            #             self.agents[adv].local_critic_value(obs_t[adv], acts_for_id[adv], last_act[adv])
+            #             for adv in self.adversary_ids
+            #         ]  # local_qs -> [num_adversarys, batch_size]（[[batch_size],[batch_size],[],[],....num_adversarys个]）
+            #         q_stack = torch.stack(local_qs, dim=1)  # q_stack -> [batch_size,num_adversarys] ([[num_adversarys],[num_adversarys],[],...batch_size个])
+            #
+            #         q_tot = self.Mixing_net(q_stack, adv_state).squeeze(-1)
+            #         combined_q = alpha * q_global + (1/self.num_adversaries) * (1-alpha) * q_tot
+            #
+            #     else:
+            #         combined_q = q_global
+            #     actor_loss = -combined_q.mean() + 1e-3 * torch.pow(logit, 2).mean()
+            #     actor_loss_list[aid].append(actor_loss)
+            new_actions = {}
+            logits_dict = {}
             for aid in self.agent_ids:
                 a, logit, h_new = self.agents[aid].action(obs_t[aid], last_act[aid], actor_h[aid], model_out=True)
-                acts_for_id = {**act, aid: a}  # 创建新动作字典
-                logits_t[aid] = logit
+                new_actions[aid] = a
+                logits_dict[aid] = logit
                 actor_h[aid] = h_new
 
-                g_act = torch.cat([acts_for_id[aid] for aid in self.agent_ids], dim=1)  # [batch_size, act_dim * num_agents]
-                q_global = self.agents[aid].critic_value(global_obs, g_act)  # [batch_size, 1]
-
+            # 计算每个智能体的actor loss
+            for aid in self.agent_ids:
+                # 梯度隔离逻辑 创建梯度隔离的动作字典
+                detached_actions = {
+                    other_aid: new_actions[other_aid].detach() if other_aid != aid
+                    else new_actions[other_aid]
+                    for other_aid in self.agent_ids
+                }
+                # 拼接全局动作
+                g_act = torch.cat([detached_actions[other_aid] for other_aid in self.agent_ids], dim=1)
+                # 计算全局Q值
+                q_global = self.agents[aid].critic_value(global_obs, g_act)
+                # q_tot计算保持梯度隔离
                 if self.adversary_ids:
+                    # 使用detach后的追逐者动作计算局部Q
                     local_qs = [
-                        self.agents[adv].local_critic_value(obs_t[adv], acts_for_id[adv], last_act[adv])
+                        self.agents[adv].local_critic_value(
+                            obs_t[adv],
+                            detached_actions[adv],  # 使用隔离后的动作
+                            last_act[adv]
+                        )
                         for adv in self.adversary_ids
-                    ]  # local_qs -> [num_adversarys, batch_size]（[[batch_size],[batch_size],[],[],....num_adversarys个]）
-                    q_stack = torch.stack(local_qs, dim=1)  # q_stack -> [batch_size,num_adversarys] ([[num_adversarys],[num_adversarys],[],...batch_size个])
-
+                    ]
+                    q_stack = torch.stack(local_qs, dim=1)
                     q_tot = self.Mixing_net(q_stack, adv_state).squeeze(-1)
-                    combined_q = alpha * q_global + (1/self.num_adversaries) * (1-alpha) * q_tot
-
+                    combined_q = alpha * q_global + (1 / self.num_adversaries) * (1 - alpha) * q_tot
                 else:
                     combined_q = q_global
-                actor_loss = -combined_q.mean() + 1e-3 * torch.pow(logit, 2).mean()
+
+                # 计算最终loss
+                actor_loss = -combined_q.mean() + 1e-3 * torch.pow(logits_dict[aid], 2).mean()
                 actor_loss_list[aid].append(actor_loss)
 
         # ========== 3) ACTOR UPDATE ==========
@@ -486,7 +531,7 @@ class MADDPG:
             soft_update(agent.actor, agent.target_actor)
             soft_update(agent.critic, agent.target_critic)
             if agent_id in self.adversary_ids:
-                soft_update(agent.local_critic, agent.target_q_agent)
+                soft_update(agent.local_critic, agent.target_local_critic)
 
     def save(self, reward, total_rewards):
         """保存模型参数和训练结果"""

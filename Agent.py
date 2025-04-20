@@ -36,7 +36,7 @@ class Agent:
             # 追逐者的局部Q网络：输入 = [局部观测, 当前动作, 上一个动作]
             self.local_critic = MLPNetwork(obs_dim + act_dim + act_dim, 1)
             self.local_critic_optimizer = Adam(self.local_critic.parameters(), lr=critic_lr)
-            self.target_q_agent = deepcopy(self.local_critic)
+            self.target_local_critic = deepcopy(self.local_critic)
         elif agent_id.startswith("agent_"):  # 逃跑者由纯maddpg驱动
             print(f"{agent_id} 是一个逃跑者。")
         else:
@@ -114,7 +114,7 @@ class Agent:
     def target_local_critic_value(self, state, action, last_action):
         """使用目标网络计算局部Q值"""
         x = torch.cat([state, action, last_action], dim=1)
-        return self.target_q_agent(x).squeeze(1)
+        return self.target_local_critic(x).squeeze(1)
 
     def update_actor(self, loss):
         """更新actor网络，使用梯度裁剪提高稳定性"""
