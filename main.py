@@ -108,7 +108,7 @@ if __name__ == '__main__':
             next_obs, reward, total_reward, done, info = env.step(action)
             
             # 将步骤添加到经验回放缓冲区
-            maddpg.add(last_action, obs, action, reward, next_obs, done, total_reward)
+            maddpg.add(obs, action, reward, done, total_reward)
             
             # 更新每个智能体的累计奖励
             for agent_id, r in reward.items():
@@ -119,10 +119,7 @@ if __name__ == '__main__':
             # 准备下一步
             obs = next_obs
             last_action = action
-            
-            # 如果所有智能体完成，结束本轮
-            if all(done.values()):
-                break
+
         
         # 结束当前episode，将完整episode存入缓冲区
         maddpg.end_episode()

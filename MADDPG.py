@@ -122,7 +122,7 @@ class MADDPG:
         # 用于基于episode的训练
         self.hidden_states = {agent_id: self.agents[agent_id].init_hidden() for agent_id in self.agent_ids}
 
-    def add(self, last_action, obs, action, reward, next_obs, done, total_reward):
+    def add(self, obs, action, reward, done, total_reward):
         """
         添加一个时间步到当前episode缓冲区
         参数:
@@ -135,7 +135,7 @@ class MADDPG:
             total_reward: 追逐者团队的总体奖励（环境直接返回）
         """
         # 直接使用环境返回的total_reward，不需要再计算
-        self.buffer.add_step(last_action, obs, action, reward, next_obs, done, total_reward)
+        self.buffer.add_step(obs, action, reward, done, total_reward)
 
     def end_episode(self):
         """结束当前episode并将其存储在缓冲区中"""
@@ -173,79 +173,7 @@ class MADDPG:
 
         return actions
 
-    # def compute_next_actions(self, batch_next_obs, batch_actions, target_h_states, valid_mask):
-    #     """
-    #     计算所有智能体的下一步动作并更新它们的隐藏状态。
-    #     参数:
-    #         batch_next_obs: 每个智能体的下一步观测字典
-    #         batch_actions: 每个智能体的当前动作字典
-    #         target_h_states: 每个智能体的隐藏状态字典
-    #         valid_mask: 有效样本的掩码
-    #     返回:
-    #         next_actions: 所有智能体的下一步动作列表
-    #         updated_h_states: 所有智能体的更新后的隐藏状态
-    #     """
-    #     next_actions = []
-    #     updated_h_states = {}
-    #
-    #     for agent_id in self.agent_ids:
-    #         agent = self.agents[agent_id]
-    #         if agent_id in batch_next_obs and len(batch_next_obs[agent_id]) > 0:
-    #             # 确保valid_mask是布尔类型
-    #             valid_mask = valid_mask.bool()
-    #
-    #             # 获取当前时间步的观测和动作
-    #             current_time_step = 0  # 假设我们总是使用第一个时间步
-    #             if current_time_step < len(batch_next_obs[agent_id]):
-    #                 next_agent_obs = batch_next_obs[agent_id][current_time_step]
-    #                 last_agent_action = batch_actions[agent_id][current_time_step]
-    #
-    #                 # 确保张量维度正确
-    #                 if next_agent_obs.dim() == 1:
-    #                     next_agent_obs = next_agent_obs.unsqueeze(0)
-    #                 if last_agent_action.dim() == 1:
-    #                     last_agent_action = last_agent_action.unsqueeze(0)
-    #
-    #                 # 使用valid_mask选择有效的样本
-    #                 valid_indices = torch.nonzero(valid_mask).squeeze()
-    #                 if valid_indices.numel() > 0:
-    #                     if valid_indices.dim() == 0:  # 如果只有一个有效索引
-    #                         valid_indices = valid_indices.unsqueeze(0)
-    #
-    #                     # 确保索引不超出范围
-    #                     valid_indices = valid_indices[valid_indices < next_agent_obs.size(0)]
-    #                     if valid_indices.numel() > 0:
-    #                         next_agent_obs = next_agent_obs[valid_indices]
-    #                         last_agent_action = last_agent_action[valid_indices]
-    #                         target_h_state = target_h_states[agent_id][valid_indices]
-    #
-    #                         next_a, new_h_state = agent.target_action(
-    #                             next_agent_obs, last_agent_action, target_h_state
-    #                         )
-    #                         next_actions.append(next_a)
-    #                         updated_h_states[agent_id] = new_h_state
-    #                     else:
-    #                         # 如果没有有效样本，创建空张量
-    #                         act_dim = self.dim_info[agent_id][1]
-    #                         next_actions.append(torch.zeros(0, act_dim, device=next_agent_obs.device))
-    #                         updated_h_states[agent_id] = target_h_states[agent_id]
-    #                 else:
-    #                     # 如果没有有效样本，创建空张量
-    #                     act_dim = self.dim_info[agent_id][1]
-    #                     next_actions.append(torch.zeros(0, act_dim, device=next_agent_obs.device))
-    #                     updated_h_states[agent_id] = target_h_states[agent_id]
-    #             else:
-    #                 # 如果时间步超出范围，创建空张量
-    #                 act_dim = self.dim_info[agent_id][1]
-    #                 next_actions.append(torch.zeros(0, act_dim, device=batch_next_obs[agent_id][0].device))
-    #                 updated_h_states[agent_id] = target_h_states[agent_id]
-    #         else:
-    #             # 如果agent_id不在batch_next_obs中，创建空张量
-    #             act_dim = self.dim_info[agent_id][1]
-    #             next_actions.append(torch.zeros(0, act_dim, device=next(batch_next_obs.values())[0][0].device))
-    #             updated_h_states[agent_id] = target_h_states[agent_id]
-    #
-    #     return next_actions, updated_h_states
+
 
     def learn(self, batch_size, gamma):
         if len(self.buffer) < batch_size:
@@ -264,23 +192,24 @@ class MADDPG:
         target_actions_dict = {agent_id: [] for agent_id in
                                self.agents.keys()}  # {agent_id: [batch_size, max_episode_length, act_dim)}
         target_actions = []  # [n_agents, batch_size, act_dim]
-        for t in range(T):
+        for t in range(T-1):  # t：[0,T-1]
             for agent_id, agent in self.agents.items():
                 target_act, new_hidden = agent.target_action(
-                    batch['next_obs'][agent_id][:, t:t+1],
-                    batch['actions'][agent_id][:, t:t+1],
+                    batch['obs'][agent_id][:, t+1:t+2],  # next_obs
+                    batch['actions'][agent_id][:, t:t+1],  #last_action
                     target_actor_h[agent_id]
                 )  # target_act -> [batch_size, act_dim]
                 target_actor_h[agent_id] = new_hidden
                 target_actions_dict[agent_id].append(target_act)
-        # 循环结束后target_actions_dict[agent_id] -> [max_episode_length, batch_size, act_dim]
+        # 循环结束后target_actions_dict[agent_id] -> [max_episode_length-1, batch_size, act_dim]
 
         # 将列表转换为numpy数组，并调整维度
         for agent_id in target_actions_dict.keys():
             target_actions_dict[agent_id] = np.stack(target_actions_dict[agent_id],
-                                                     axis=1)  # 转换为[batch_size, max_episode_length, act_dim]
+                                                     axis=1)  # 转换为[batch_size, max_episode_length-1, act_dim]
 
         # ========== 1) GLOBAL CRITIC (MADDPG) + QMIX LOCAL Q UPDATES ==========
+        q_global
         for t in range(T-1):
             mask = batch['lengths'] > t  # batch['lengths']应该是batch_size个长度值
             if mask.sum() == 0:  # 说明抽到一组空数据
@@ -290,7 +219,7 @@ class MADDPG:
             global_obs = torch.cat([batch['obs'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)  # ???不确定，obs里面：[batch_size,t,单个obs_dim]
             # [batch['obs'][aid] : [batch_size, max_episode_length, obs_dim]
             global_act = torch.cat([batch['actions'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)
-            next_global_obs = torch.cat([batch['next_obs'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)
+            next_global_obs = torch.cat([batch['obs'][aid][:, t+1:t+2] for aid in self.agent_ids], dim=1)
             # batch['actions'][aid] : [batch_size, max_episode_length, act_dim]
             # next actions via target actors
             next_acts = torch.cat([target_actions_dict[aid][:, t:t+1]for aid in self.agent_ids], dim=1)
@@ -314,16 +243,16 @@ class MADDPG:
                 agent = self.agents[aid]
                 obs = batch['obs'][aid][:, t:t+1] # [batch_size, 1, obs_dim]
                 act = batch['actions'][aid][:, t:t+1]
-                last_act = batch['last_actions'][aid][:, t:t+1]
-                obs_n = batch['next_obs'][aid][:, t:t+1]
+                last_act = batch['actions'][aid][:, t-1:t] if t > 0 else torch.zeros_like(act)
+                obs_next = batch['obs'][aid][:, t+1:t+2]
                 next_a = next_acts[self.agent_ids.index(aid)]
 
                 q_loc = agent.local_critic_value(obs, act, last_act)  # q_loc -> [batch_size]
-                q_loc_n = agent.target_local_critic_value(obs_n, next_a, act).detach()
+                q_loc_n = agent.target_local_critic_value(obs_next, next_a, act).detach()
                 adv_qs.append(q_loc)  # 循环后 adv_qs -> [num_adversarys, batch_size]（[[batch_size],[batch_size],[],[],....num_adversarys个]）
                 adv_q_nexts.append(q_loc_n)
                 adv_states.append(obs)  # adv_states -> [num_adversarys, batch_size, obs_dim]
-                adv_next_states.append(obs_n)
+                adv_next_states.append(obs_next)
 
             if adv_qs:
                 q_stack = torch.stack(adv_qs, dim=1)  # q_stack -> [batch_size,num_adversarys] ([[num_adversarys],[num_adversarys],[],...batch_size个])
@@ -338,6 +267,7 @@ class MADDPG:
                 q_tot = self.Mixing_net(q_stack, state_stack)  # q_tot -> [batch_size, 1]
                 q_next_tot = self.Mixing_target_net(q_next_stack, next_state_st).detach()
                 mix_target = team_r + gamma * (1 - dones) * q_next_tot
+                # loss更新放在t循环外
                 mix_loss = F.mse_loss(q_tot, mix_target)
                 self.update_mixing(mix_loss)
                 self.qmix_logger.info(f"QMIX Loss: {mix_loss.item():.4f}")
@@ -353,7 +283,7 @@ class MADDPG:
         count = 0
 
         # replay the same T steps to compute policy gradient
-        for t in range(T):
+        for t in range(T-1):
             mask = batch['lengths'] > t
             if mask.sum() == 0:
                 continue
@@ -361,7 +291,10 @@ class MADDPG:
             # build per‐agent obs & last_act
             obs_t = {aid: batch['obs'][aid][:, t:t+1] for aid in self.agent_ids}
             act = {aid: batch['actions'][aid][:, t:t+1] for aid in self.agent_ids}  # [aid]   [banch_size, act_dim]
-            last_act = {aid: batch['last_actions'][aid][:, t:t+1] for aid in self.agent_ids}
+            if t > 0:
+                last_act = {aid: batch['actions'][aid][:, t-1:t] for aid in self.agent_ids}
+            else:
+                last_act = {aid: torch.zeros_like(act[aid]) for aid in self.agent_ids}
             # global obs & joint action
             global_obs = torch.cat([batch['obs'][aid][:, t:t+1] for aid in self.agent_ids], dim=1)
             adv_state = torch.cat([obs_t[adv] for adv in self.adversary_ids], dim=1)

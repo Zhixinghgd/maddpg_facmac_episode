@@ -43,25 +43,25 @@ class EpisodeBuffer:
         
         self.current_episode = {  # 以'obs'等为键构建的字典，存储当前可能只进行了一半的episode
             'obs': {aid: [] for aid in self.agent_ids},  # obs也是字典，以agent_id为键，用键查到的是列表，里面总共两维，第一维是时间步,第二维就是观测列表
-            'next_obs': {aid: [] for aid in self.agent_ids},
+            # 'next_obs': {aid: [] for aid in self.agent_ids},
             'actions': {aid: [] for aid in self.agent_ids},
-            'last_actions': {aid: [] for aid in self.agent_ids},
+            # 'last_actions': {aid: [] for aid in self.agent_ids},
             'rewards': {aid: [] for aid in self.agent_ids},  # rewards也是字典，以agent_id为键，用键查到的是列表，里面只有一维，是时间步
             'dones': {aid: [] for aid in self.agent_ids},  # dones也是字典，以agent_id为键，用键查到的是列表，里面只有一维，是时间步
             'total_rewards': [],  # total_rewards是列表，里面只有一维，是时间步
             'length': 0
         }
     
-    def add_step(self, last_action, obs, action, reward, next_obs, done, total_reward=None):
+    def add_step(self, obs, action, reward, done, total_reward=None):
         """
         添加单个转换到当前episode缓冲区
         """
         for agent_id in self.agent_ids:
             self.current_episode['obs'][agent_id].append(obs[agent_id])
-            self.current_episode['next_obs'][agent_id].append(next_obs[agent_id])
+            # self.current_episode['next_obs'][agent_id].append(next_obs[agent_id])
             
             a = action[agent_id]
-            la = last_action[agent_id]
+            # la = last_action[agent_id]
             
             if isinstance(a, (int, np.integer)):
                 print(f'动作空间离散，智能体:{agent_id}')
@@ -70,12 +70,12 @@ class EpisodeBuffer:
                 a_onehot[a] = 1.0
                 a = a_onehot
                 
-                la_onehot = np.zeros(act_dim, dtype=np.float32)
-                la_onehot[la] = 1.0
-                la = la_onehot
+                # la_onehot = np.zeros(act_dim, dtype=np.float32)
+                # la_onehot[la] = 1.0
+                # la = la_onehot
                 
             self.current_episode['actions'][agent_id].append(a)
-            self.current_episode['last_actions'][agent_id].append(la)
+            # self.current_episode['last_actions'][agent_id].append(la)
             self.current_episode['rewards'][agent_id].append(reward[agent_id])
             self.current_episode['dones'][agent_id].append(done[agent_id])
         
@@ -93,9 +93,9 @@ class EpisodeBuffer:
         # 将当前episode转换为张量并存储
         episode_data = {
             'obs': {},
-            'next_obs': {},
+            # 'next_obs': {},
             'actions': {},
-            'last_actions': {},
+            # 'last_actions': {},
             'rewards': {},
             'dones': {},
             'total_rewards': None,
@@ -105,9 +105,9 @@ class EpisodeBuffer:
         # 转换每个智能体的数据为张量
         for agent_id in self.agent_ids:
             episode_data['obs'][agent_id] = torch.FloatTensor(np.array(self.current_episode['obs'][agent_id])).to(self.device)
-            episode_data['next_obs'][agent_id] = torch.FloatTensor(np.array(self.current_episode['next_obs'][agent_id])).to(self.device)
+            # episode_data['next_obs'][agent_id] = torch.FloatTensor(np.array(self.current_episode['next_obs'][agent_id])).to(self.device)
             episode_data['actions'][agent_id] = torch.FloatTensor(np.array(self.current_episode['actions'][agent_id])).to(self.device)
-            episode_data['last_actions'][agent_id] = torch.FloatTensor(np.array(self.current_episode['last_actions'][agent_id])).to(self.device)
+            # episode_data['last_actions'][agent_id] = torch.FloatTensor(np.array(self.current_episode['last_actions'][agent_id])).to(self.device)
             episode_data['rewards'][agent_id] = torch.FloatTensor(np.array(self.current_episode['rewards'][agent_id])).to(self.device)
             episode_data['dones'][agent_id] = torch.FloatTensor(np.array(self.current_episode['dones'][agent_id])).to(self.device)
         
@@ -125,9 +125,9 @@ class EpisodeBuffer:
         # 重置当前episode
         self.current_episode = {
             'obs': {aid: [] for aid in self.agent_ids},
-            'next_obs': {aid: [] for aid in self.agent_ids},
+            # 'next_obs': {aid: [] for aid in self.agent_ids},
             'actions': {aid: [] for aid in self.agent_ids},
-            'last_actions': {aid: [] for aid in self.agent_ids},
+            # 'last_actions': {aid: [] for aid in self.agent_ids},
             'rewards': {aid: [] for aid in self.agent_ids},
             'dones': {aid: [] for aid in self.agent_ids},
             'total_rewards': [],
@@ -147,9 +147,9 @@ class EpisodeBuffer:
         # 准备批次数据
         batch_data = {
             'obs': {aid: [] for aid in self.agent_ids},
-            'next_obs': {aid: [] for aid in self.agent_ids},
+            # 'next_obs': {aid: [] for aid in self.agent_ids},
             'actions': {aid: [] for aid in self.agent_ids},
-            'last_actions': {aid: [] for aid in self.agent_ids},
+            # 'last_actions': {aid: [] for aid in self.agent_ids},
             'rewards': {aid: [] for aid in self.agent_ids},
             'dones': {aid: [] for aid in self.agent_ids},
             'total_rewards': [],
@@ -164,9 +164,9 @@ class EpisodeBuffer:
             for agent_id in self.agent_ids:
                 batch_data['obs'][agent_id].append(episode['obs'][agent_id])  # [batch_size, max_episode_length, obs_dim]
                 # episode['obs'][agent_id]   ：[max_episode_length, obs_dim]
-                batch_data['next_obs'][agent_id].append(episode['next_obs'][agent_id])
+                # batch_data['next_obs'][agent_id].append(episode['next_obs'][agent_id])
                 batch_data['actions'][agent_id].append(episode['actions'][agent_id])
-                batch_data['last_actions'][agent_id].append(episode['last_actions'][agent_id])
+                # batch_data['last_actions'][agent_id].append(episode['last_actions'][agent_id])
                 batch_data['rewards'][agent_id].append(episode['rewards'][agent_id])
                 batch_data['dones'][agent_id].append(episode['dones'][agent_id])
             
@@ -175,9 +175,9 @@ class EpisodeBuffer:
         # 转换为张量
         for agent_id in self.agent_ids:
             batch_data['obs'][agent_id] = torch.stack(batch_data['obs'][agent_id])
-            batch_data['next_obs'][agent_id] = torch.stack(batch_data['next_obs'][agent_id])
+            # batch_data['next_obs'][agent_id] = torch.stack(batch_data['next_obs'][agent_id])
             batch_data['actions'][agent_id] = torch.stack(batch_data['actions'][agent_id])
-            batch_data['last_actions'][agent_id] = torch.stack(batch_data['last_actions'][agent_id])
+            # batch_data['last_actions'][agent_id] = torch.stack(batch_data['last_actions'][agent_id])
             batch_data['rewards'][agent_id] = torch.stack(batch_data['rewards'][agent_id])
             batch_data['dones'][agent_id] = torch.stack(batch_data['dones'][agent_id])
         
