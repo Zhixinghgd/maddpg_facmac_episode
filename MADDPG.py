@@ -469,7 +469,8 @@ class MADDPG:
                     ]
                     q_stack = torch.stack(local_qs, dim=1)
                     q_tot = self.Mixing_net(q_stack, adv_state).squeeze(-1)
-                    combined_q = alpha * q_global + (1 / self.num_adversaries) * (1 - alpha) * q_tot
+                    # combined_q = alpha * q_global + (1 / self.num_adversaries) * (1 - alpha) * q_tot
+                    combined_q = (1 / self.num_adversaries) * q_tot
                 else:
                     combined_q = q_global
 

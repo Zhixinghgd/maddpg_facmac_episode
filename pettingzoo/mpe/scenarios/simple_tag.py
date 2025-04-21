@@ -133,7 +133,7 @@ class Scenario(BaseScenario):
                 if self.is_collision(ag, adv):
                     collision += 10.0
 
-        # 2) shaping：所有追逐者到最近逃跑者的最小距离
+        # 2) shaping：所有追逐者追离他最近的逃跑者都会有奖励
         for adv in self.adversaries(world):
             rew -= 0.2 * min([np.sqrt(np.sum(np.square(a.state.p_pos - adv.state.p_pos))) for a in self.good_agents(world)])
 

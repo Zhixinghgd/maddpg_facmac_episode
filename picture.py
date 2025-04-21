@@ -12,7 +12,7 @@ def smooth_curve(data, window=100):
     return smoothed
 
 # 加载数据
-result_dir = './results/simple_tag_v2/23'  # 替换为你的实际路径
+result_dir = './results/simple_tag_v2/4'  # 替换为你的实际路径
 with open(os.path.join(result_dir, 'rewards.pkl'), 'rb') as f:
     data = pickle.load(f)
 rewards = data['rewards']  # 结构：{agent_id: array[episode_num]}
